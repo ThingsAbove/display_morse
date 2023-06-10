@@ -236,7 +236,7 @@ class KochTrainer:
 
 
 class KochTrainerAudioGen:
-    def __init__( self, message, effective_speed=19, character_speed=22, hertz=600, bandwidth=200, end_char_delay=0.0017 ):
+    def __init__( self, message, effective_speed=18, character_speed=21, hertz=600, bandwidth=300, end_char_delay=0.0017 ):
         self._effective_speed       = effective_speed
         self._character_speed       = max( character_speed, self._effective_speed )
         self._hertz                 = hertz
@@ -392,10 +392,10 @@ def main():
     # Global Commands
     #
 
-    parser.add_argument( "--character-speed", type=float, default=20,
+    parser.add_argument( "--character-speed", type=float, default=21,
                          help="Morse words per minute." )
 
-    parser.add_argument( "--effective-speed", type=float, default=20,
+    parser.add_argument( "--effective-speed", type=float, default=18,
                          help="Effective words per minute (farnsworth speed)." )
 
     parser.add_argument( "-f", "--file", type=str, default=None,
