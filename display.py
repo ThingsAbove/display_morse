@@ -15,9 +15,11 @@ except ImportError:
     print("  pip install moviepy Pillow imageio-ffmpeg")
 
 class ColorfulCharacterDisplay:
-    def __init__(self, text):
+    def __init__(self, text, effective_speed=18, character_speed=20):
         self.text = text
         self.index = 0
+        self.effective_speed = effective_speed
+        self.character_speed = character_speed
 
     def display_character(self, character):
         if os.name == 'nt':
@@ -39,10 +41,10 @@ class ColorfulCharacterDisplay:
 
         character = self.text[self.index]
         if character.isalnum():
-            koch_audio = KochTrainerAudioGen(character, effective_speed=18, character_speed=20)
+            koch_audio = KochTrainerAudioGen(character, effective_speed=self.effective_speed, character_speed=self.character_speed)
             koch_audio.emit_audio()
         else:
-            koch_audio = KochTrainerAudioGen(' ', effective_speed=18, character_speed=20)
+            koch_audio = KochTrainerAudioGen(' ', effective_speed=self.effective_speed, character_speed=self.character_speed)
             koch_audio.emit_audio()
   
         self.display_character(character)
@@ -378,6 +380,10 @@ if __name__ == "__main__":
     parser.add_argument('text', help='Text to display')
     parser.add_argument('-v', '--video', action='store_true', help='Generate video file')
     parser.add_argument('-f', '--file', type=str, help='Output video filename (required with -v, or defaults to videos/morse_video.mp4)')
+    parser.add_argument('--effective-speed', type=float, default=18,
+                        help='Effective words per minute (Farnsworth speed). Default: 18')
+    parser.add_argument('--character-speed', type=float, default=20,
+                        help='Character speed in words per minute. Default: 20')
     
     args = parser.parse_args()
     
@@ -402,10 +408,10 @@ if __name__ == "__main__":
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
         
-        generate_video(text, output_file)
+        generate_video(text, output_file, effective_speed=args.effective_speed, character_speed=args.character_speed)
     else:
         # Terminal display mode (original behavior)
-        display = ColorfulCharacterDisplay(text)
+        display = ColorfulCharacterDisplay(text, effective_speed=args.effective_speed, character_speed=args.character_speed)
         if os.name == 'nt':
             # For Windows
             os.system('cls')
