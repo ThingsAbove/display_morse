@@ -298,6 +298,7 @@ class KochTrainerAudioGen:
             "INT": (self.dit, self.dit, self.dah, self.dit, self.dah),
             "HH": (self.dit, self.dit, self.dit, self.dit, self.dit, self.dit, self.dit, self.dit),
             "BT": (self.dah, self.dit, self.dit, self.dit, self.dah),
+            "BK": (self.dah, self.dit, self.dit, self.dah, self.dit, self.dah),
             "KA": (self.dah, self.dit, self.dah, self.dit, self.dah),
             "CT": (self.dah, self.dit, self.dah, self.dit, self.dah),
             "KN": (self.dah, self.dit, self.dah, self.dah, self.dit),
