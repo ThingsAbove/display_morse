@@ -30,10 +30,11 @@ def parse_markup(text, effective_speed=18, character_speed=20):
     Supports:
     - Prosigns in angle brackets, e.g. "<AR>" (timed, converted to token "AR", displayed as "AR")
     - Informational segments in square brackets, e.g. "[Note: ...]" (NOT timed; displayed as-is WITHOUT the brackets; case preserved)
+    - Commands in braces, e.g. "{p05}" (NOT displayed; affects timing depending on command)
     - Newlines / carriage returns (timed as a space, displayed as a newline)
 
     Returns:
-        tuple: (morse_tokens, display_chars) where:
+        tuple: (morse_tokens, display_chars, events) where:
             - morse_tokens: list[str] timed tokens to feed to KochTrainerAudioGen / timing
             - display_chars: list[dict] one per displayed character, with metadata:
                 - ch: the character to display (may be '\\n')
@@ -41,6 +42,9 @@ def parse_markup(text, effective_speed=18, character_speed=20):
                 - is_prosign: bool
                 - is_info: bool
                 - info_anchor: int | None, token index at which the whole info segment appears
+            - events: list[dict] ordered playback events. Each is either:
+                - {"kind": "token", "token_idx": int, "token": str}
+                - {"kind": "pause", "seconds": float}
     """
     valid_prosigns, supported_tokens = _get_morse_tables(
         effective_speed=effective_speed, character_speed=character_speed
@@ -48,6 +52,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
 
     morse_tokens = []
     display_chars = []
+    events = []
     token_idx = 0
 
     def add_info_segment(segment, anchor):
@@ -68,6 +73,20 @@ def parse_markup(text, effective_speed=18, character_speed=20):
     while i < len(text):
         ch = text[i]
 
+        # Commands: not displayed. Currently supported: {p##} pause in seconds.
+        if ch == "{":
+            end_idx = text.find("}", i + 1)
+            if end_idx != -1:
+                cmd = text[i + 1 : end_idx].strip()
+                m = re.match(r"^[pP](\d+(?:\.\d+)?)$", cmd)
+                if m:
+                    seconds = float(m.group(1))
+                    if seconds > 0:
+                        events.append({"kind": "pause", "seconds": seconds})
+                # Always consume brace commands without displaying them.
+                i = end_idx + 1
+                continue
+
         # Informational segment: displayed immediately (no timing, no morse), case preserved.
         if ch == "[":
             end_idx = text.find("]", i + 1)
@@ -85,6 +104,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
                 prosign = text[i + 1 : end_idx].upper()
                 if prosign in valid_prosigns:
                     morse_tokens.append(prosign)
+                    events.append({"kind": "token", "token_idx": token_idx, "token": prosign})
                     for pch in prosign:
                         display_chars.append(
                             {
@@ -104,6 +124,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
             ch = "\n"
         if ch == "\n":
             morse_tokens.append(" ")
+            events.append({"kind": "token", "token_idx": token_idx, "token": " "})
             display_chars.append(
                 {
                     "ch": "\n",
@@ -124,6 +145,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
         # Spaces: timed as spaces, displayed as spaces.
         if ch == " ":
             morse_tokens.append(" ")
+            events.append({"kind": "token", "token_idx": token_idx, "token": " "})
             display_chars.append(
                 {
                     "ch": " ",
@@ -142,6 +164,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
         if token not in supported_tokens:
             # Unknown/unsupported: keep the original char in the viewport, but time it as a space.
             morse_tokens.append(" ")
+            events.append({"kind": "token", "token_idx": token_idx, "token": " "})
             display_chars.append(
                 {
                     "ch": ch,
@@ -156,6 +179,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
             continue
 
         morse_tokens.append(token)
+        events.append({"kind": "token", "token_idx": token_idx, "token": token})
         display_chars.append(
             {
                 "ch": token,
@@ -168,7 +192,7 @@ def parse_markup(text, effective_speed=18, character_speed=20):
         token_idx += 1
         i += 1
 
-    return morse_tokens, display_chars
+    return morse_tokens, display_chars, events
 
 
 def parse_prosigns(text):
@@ -229,10 +253,11 @@ class ColorfulCharacterDisplay:
         self.character_speed = character_speed
 
         # Parse markup (prosigns, info segments, newlines) into timed tokens and display characters
-        self.tokens, self.display_chars = parse_markup(
+        self.tokens, self.display_chars, self.events = parse_markup(
             text, effective_speed=effective_speed, character_speed=character_speed
         )
         self.token_index = 0  # index into timed tokens
+        self.event_index = 0
         self.effective_speed = effective_speed
         self.character_speed = character_speed
         
@@ -284,19 +309,30 @@ class ColorfulCharacterDisplay:
         print("".join(output_parts) + reset)
 
     def next(self):
-        if self.token_index >= len(self.tokens):
+        if self.event_index >= len(self.events):
             return False
 
-        token = self.tokens[self.token_index]
-        
-        # Send token to KochTrainerAudioGen
-        # For prosigns, send the entire prosign string
-        # For regular characters, send as-is
-        koch_audio = KochTrainerAudioGen(token, effective_speed=self.effective_speed, character_speed=self.character_speed)
+        ev = self.events[self.event_index]
+        self.event_index += 1
+
+        if ev["kind"] == "pause":
+            # Pause should freeze both sound and viewport progression.
+            time.sleep(ev["seconds"])
+            return True
+
+        token = ev["token"]
+        token_idx = ev["token_idx"]
+
+        # Highlight and advance exactly this token index.
+        self.token_index = token_idx
+
+        koch_audio = KochTrainerAudioGen(
+            token, effective_speed=self.effective_speed, character_speed=self.character_speed
+        )
         koch_audio.emit_audio()
-  
+
         self.display_character()
-        self.token_index += 1
+        self.token_index = token_idx + 1
         return True
 
 
@@ -407,6 +443,30 @@ def generate_audio_from_tokens(tokens, effective_speed=18, character_speed=20):
     return filtered_audio
 
 
+def generate_audio_from_events(events, effective_speed=18, character_speed=20):
+    """Generate audio from token/pause events.
+
+    - token events: emitted via KochTrainerAudioGen.generate_letter_sound()
+    - pause events: emitted as exact-length silence
+    """
+    import itertools
+    import audiogen_p3
+
+    temp_gen = KochTrainerAudioGen("", effective_speed=effective_speed, character_speed=character_speed)
+    band_pass_filter = audiogen_p3.filters.band_pass(temp_gen._hertz, temp_gen._bandwidth)
+
+    parts = []
+    for ev in events:
+        if ev["kind"] == "pause":
+            parts.append(audiogen_p3.silence(ev["seconds"]))
+        else:
+            parts.append(temp_gen.generate_letter_sound(ev["token"]))
+
+    combined_audio = itertools.chain(*parts) if parts else itertools.chain()
+    filtered_audio = band_pass_filter(band_pass_filter(band_pass_filter(combined_audio)))
+    return filtered_audio
+
+
 def get_wrapped_text_layout(text, font, max_width, padding=40, font_size=100):
     """Calculate character positions with word wrapping.
 
@@ -503,10 +563,10 @@ def get_wrapped_text_layout(text, font, max_width, padding=40, font_size=100):
     return layout, line_height
 
 
-def create_video_frame_with_markup(display_text, display_chars, current_token_idx, token_count, width, height, font_size=100):
+def create_video_frame_with_markup(display_text, display_chars, reveal_token_idx, active_token_idx, token_count, width, height, font_size=100):
     """Create a single video frame with prosigns, newlines, and info segments.
 
-    - Timed Morse content is revealed up to current_token_idx (current token in red)
+    - Timed Morse content is revealed up to reveal_token_idx (active token in red)
     - Prosigns are green once past (red when current)
     - Informational text in [brackets] is light-blue and appears instantly when reached
     - Explicit newlines are preserved
@@ -542,14 +602,18 @@ def create_video_frame_with_markup(display_text, display_chars, current_token_id
         max_visible_lines = 1
     
     # Determine if this is the final frame
-    show_all = (current_token_idx >= token_count)
+    show_all = (reveal_token_idx >= token_count and active_token_idx is None)
     
-    # Find which line the current token is on (for scrolling)
+    # Find which line the active token (or last revealed token) is on (for scrolling)
     current_line_num = 0
     if layout:
         if show_all:
             current_line_num = max([ln for _, _, _, ln, _ in layout])
         else:
+            focus_token_idx = active_token_idx
+            if focus_token_idx is None and reveal_token_idx > 0:
+                focus_token_idx = reveal_token_idx - 1
+
             # Prefer the first non-space char belonging to the current token
             found = False
             for char, _x, _y, ln, text_idx in layout:
@@ -557,7 +621,7 @@ def create_video_frame_with_markup(display_text, display_chars, current_token_id
                 if meta.get("is_info"):
                     continue
                 t_idx = meta.get("token_idx")
-                if t_idx == current_token_idx and char != " ":
+                if focus_token_idx is not None and t_idx == focus_token_idx and char != " ":
                     current_line_num = ln
                     found = True
                     break
@@ -568,7 +632,7 @@ def create_video_frame_with_markup(display_text, display_chars, current_token_id
                     if meta.get("is_info"):
                         continue
                     t_idx = meta.get("token_idx")
-                    if t_idx is not None and t_idx <= current_token_idx and char != " ":
+                    if t_idx is not None and t_idx < reveal_token_idx and char != " ":
                         current_line_num = ln
                         break
     
@@ -607,9 +671,9 @@ def create_video_frame_with_markup(display_text, display_chars, current_token_id
         if show_all:
             visible = True
         elif is_info:
-            visible = info_anchor is not None and info_anchor <= current_token_idx
+            visible = info_anchor is not None and info_anchor <= reveal_token_idx
         else:
-            visible = token_idx is not None and token_idx <= current_token_idx
+            visible = token_idx is not None and (token_idx < reveal_token_idx or token_idx == active_token_idx)
 
         if not visible:
             continue
@@ -620,7 +684,7 @@ def create_video_frame_with_markup(display_text, display_chars, current_token_id
         elif show_all:
             color = "#00FF00" if is_prosign else "#FFFF00"
         else:
-            if token_idx == current_token_idx:
+            if token_idx == active_token_idx:
                 color = "#FF0000"
             else:
                 color = "#00FF00" if is_prosign else "#FFFF00"
@@ -745,39 +809,46 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
     print("Generating video...")
     print(f"Text: {text}")
     
-    # Parse markup: timed morse tokens + display text (includes newlines + info segments)
-    tokens, display_chars = parse_markup(text, effective_speed=effective_speed, character_speed=character_speed)
+    # Parse markup: timed morse tokens + display text + timeline events (includes pauses)
+    tokens, display_chars, events = parse_markup(text, effective_speed=effective_speed, character_speed=character_speed)
     display_text = "".join([m["ch"] for m in display_chars])
     print(f"Display text: {display_text}")
     
-    # Calculate timing for each token
+    # Build timeline segments (token/pause) and total duration
     print("Calculating token timings...")
-    token_timings = []
     current_time = 0.0
+    segments = []
     
-    # Calculate timing for each token
-    for token_idx, token in enumerate(tokens):
-        duration = calculate_token_duration(token, effective_speed, character_speed)
-        token_timings.append({
-            'token_idx': token_idx,
-            'token': token,
-            'start_time': current_time,
-            'duration': duration,
-            'end_time': current_time + duration,
-            'is_prosign': len(token) > 1
-        })
-        current_time += duration
+    for ev in events:
+        if ev["kind"] == "pause":
+            dur = float(ev["seconds"])
+            segments.append(
+                {"kind": "pause", "start": current_time, "end": current_time + dur}
+            )
+            current_time += dur
+        else:
+            token = ev["token"]
+            dur = calculate_token_duration(token, effective_speed, character_speed)
+            segments.append(
+                {
+                    "kind": "token",
+                    "token_idx": ev["token_idx"],
+                    "token": token,
+                    "start": current_time,
+                    "end": current_time + dur,
+                }
+            )
+            current_time += dur
     
     total_duration = current_time
     print(f"Total duration: {total_duration:.2f} seconds")
     
-    # Generate complete audio track from tokens
+    # Generate complete audio track from events (tokens + exact pauses)
     print("Generating audio track...")
     temp_audio_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
     temp_audio_file.close()
     
-    # Generate audio from tokens
-    audio_generator = generate_audio_from_tokens(tokens, effective_speed=effective_speed, character_speed=character_speed)
+    audio_generator = generate_audio_from_events(events, effective_speed=effective_speed, character_speed=character_speed)
     with open(temp_audio_file.name, "wb") as f:
         import audiogen_p3
         audiogen_p3.write_wav(f, audio_generator)
@@ -795,20 +866,36 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
         elif t >= total_duration:
             t = total_duration
         
-        # Find which token should be displayed at time t
-        current_token_idx = 0
-        for timing in token_timings:
-            if t >= timing['start_time']:
-                current_token_idx = timing['token_idx']
-            else:
-                break
-        
-        # For final frame (at or past end), set current_token_idx to len(tokens) to indicate "show all"
+        # Determine reveal + active token for time t.
+        # During pauses: active_token_idx=None, reveal_token_idx does not change.
+        reveal_token_idx = 0
+        active_token_idx = None
+
         if t >= total_duration:
-            current_token_idx = len(tokens)  # One past the end indicates final frame
-        
+            reveal_token_idx = len(tokens)
+            active_token_idx = None
+        else:
+            for seg in segments:
+                if t < seg["end"]:
+                    if seg["kind"] == "token":
+                        active_token_idx = seg["token_idx"]
+                        reveal_token_idx = seg["token_idx"]
+                    else:
+                        active_token_idx = None
+                    break
+                # Segment fully completed
+                if seg["kind"] == "token":
+                    reveal_token_idx = seg["token_idx"] + 1
+
         frame_img = create_video_frame_with_markup(
-            display_text, display_chars, current_token_idx, len(tokens), width, height, font_size
+            display_text,
+            display_chars,
+            reveal_token_idx,
+            active_token_idx,
+            len(tokens),
+            width,
+            height,
+            font_size,
         )
         return np.array(frame_img)
     
@@ -851,7 +938,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Display text character by character with morse code audio')
     parser.add_argument('text', nargs='?', default=None, help='Text to display (omit when using -i)')
     parser.add_argument('-i', '--input-file', type=str, default=None,
-                        help='Input file. Newlines/CR are preserved for display; prosigns in <angle brackets> supported; info segments in [brackets] are displayed instantly in light blue without timing/audio.')
+                        help='Input file. Newlines/CR are preserved for display; prosigns in <angle brackets> supported; info segments in [brackets] are displayed instantly in light blue without timing/audio; commands in {braces} are not displayed (e.g. {p05} pauses for 5 seconds).')
     parser.add_argument('-v', '--video', action='store_true', help='Generate video file')
     parser.add_argument('-f', '--file', type=str, help='Output video filename (required with -v, or defaults to videos/morse_video.mp4)')
     parser.add_argument('--effective-speed', type=float, default=18,
