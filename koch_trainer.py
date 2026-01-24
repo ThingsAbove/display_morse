@@ -384,6 +384,68 @@ class KochTrainerAudioGen:
 
 
 
+def process_input_file(filepath):
+    """Read and process an input file for morse code conversion.
+    
+    - Strips carriage returns and newlines, replacing them with spaces
+    - Handles prosigns in angle brackets (e.g., <AR>, <SK>, <BT>)
+    - Converts prosigns to their two-letter representation without brackets
+    
+    Args:
+        filepath: Path to the input file
+        
+    Returns:
+        Processed text string ready for morse code generation
+    """
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Replace carriage returns and newlines with spaces
+    content = content.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+    
+    # Process prosigns in angle brackets
+    # Valid prosigns based on KochTrainerAudioGen._letters
+    valid_prosigns = ['AA', 'AR', 'AS', 'VE', 'INT', 'HH', 'BT', 'BK', 'KA', 'CT', 'KN', 'NJ', 'SK', 'SN']
+    
+    processed_text = []
+    i = 0
+    
+    while i < len(content):
+        if content[i] == '<':
+            # Find the closing bracket
+            end_idx = content.find('>', i + 1)
+            if end_idx == -1:
+                # No closing bracket, treat '<' as regular character
+                processed_text.append(content[i])
+                i += 1
+                continue
+            
+            # Extract prosign content
+            prosign = content[i+1:end_idx].upper()
+            
+            # Validate prosign exists
+            if prosign in valid_prosigns:
+                # Add prosign without brackets
+                processed_text.append(prosign)
+                i = end_idx + 1
+            else:
+                # Invalid prosign, treat as regular characters
+                processed_text.append(content[i])
+                i += 1
+        else:
+            # Regular character
+            processed_text.append(content[i])
+            i += 1
+    
+    # Join and clean up multiple spaces
+    result = ''.join(processed_text)
+    # Replace multiple consecutive spaces with single space
+    while '  ' in result:
+        result = result.replace('  ', ' ')
+    
+    return result.strip()
+
+
 def main():
     import argparse
 
@@ -450,12 +512,26 @@ def main():
     parser.add_argument( "--word-file", type=str, default=None,
                          help="Word file from which to pull random words. Default is 'english.txt', which is a list of the 3,000 most common english words. Also available are 'english-long.txt' and 'english-all.txt'. You can also pass an absolute path to a specific file. Each word must be on its own line" )
 
+    parser.add_argument( "-i", "--input-file", type=str, default=None,
+                         help="Input file containing text to convert to morse code. Carriage returns and newlines are replaced with spaces. Prosigns can be designated using angle brackets (e.g., <AR>, <SK>, <BT>)." )
+
     parser.add_argument( "message", nargs="*", default=None )
 
     args = parser.parse_args()
 
     trainer = KochTrainer( args )
-    trainer.run()
+    
+    # Handle input file if provided
+    if args.input_file:
+        message = process_input_file(args.input_file)
+        trainer.run(message=message)
+    elif args.message:
+        # Handle command line message arguments
+        message = " ".join(args.message)
+        trainer.run(message=message)
+    else:
+        # Default behavior (random characters, words, or callsigns)
+        trainer.run()
 
     return 0
 

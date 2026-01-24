@@ -1,0 +1,8 @@
+Hello World
+This is a test message
+with multiple lines.
+
+It also contains prosigns like <AR> and <SK>
+which should be processed correctly.
+
+<BT> separates sections <BT>

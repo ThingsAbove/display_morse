@@ -558,7 +558,7 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
     
     # Parse prosigns to get tokens and display text
     tokens, display_text = parse_prosigns(text.upper())
-    print(f"Tokens: {tokens}")
+    #print(f"Tokens: {tokens}")
     print(f"Display text: {display_text}")
     
     # Get valid prosigns for color tracking
@@ -676,9 +676,25 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
     print(f"Video generation complete: {output_file}")
 
 
+def read_input_file(filepath):
+    """Read an input file and prepare for morse display.
+    
+    Strips carriage returns and newlines, replacing them with spaces.
+    Prosigns in angle brackets (e.g., <AR>, <SK>) are preserved for parse_prosigns.
+    """
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+    content = content.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+    while '  ' in content:
+        content = content.replace('  ', ' ')
+    return content.strip()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Display text character by character with morse code audio')
-    parser.add_argument('text', help='Text to display')
+    parser.add_argument('text', nargs='?', default=None, help='Text to display (omit when using -i)')
+    parser.add_argument('-i', '--input-file', type=str, default=None,
+                        help='Input file: newlines/CR replaced with spaces; prosigns in <angle brackets> supported')
     parser.add_argument('-v', '--video', action='store_true', help='Generate video file')
     parser.add_argument('-f', '--file', type=str, help='Output video filename (required with -v, or defaults to videos/morse_video.mp4)')
     parser.add_argument('--effective-speed', type=float, default=18,
@@ -688,7 +704,14 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    text = args.text.upper()
+    if args.input_file:
+        text = read_input_file(args.input_file)
+    elif args.text is not None:
+        text = args.text
+    else:
+        parser.error('Either provide text as argument or use -i/--input-file')
+    
+    text = text.upper()
     
     if args.video:
         # Video generation mode
