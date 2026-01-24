@@ -5,6 +5,7 @@ env/
 
 # Videos folder
 videos/
+input/
 
 # Python cache
 __pycache__/

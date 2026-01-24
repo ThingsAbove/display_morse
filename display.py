@@ -16,6 +16,161 @@ except ImportError:
     print("  pip install moviepy Pillow imageio-ffmpeg")
 
 
+def _get_morse_tables(effective_speed=18, character_speed=20):
+    """Return (valid_prosigns, supported_tokens) from KochTrainerAudioGen."""
+    temp_gen = KochTrainerAudioGen("", effective_speed=effective_speed, character_speed=character_speed)
+    supported_tokens = set(temp_gen._letters.keys())
+    valid_prosigns = {k for k in supported_tokens if len(k) > 1}
+    return valid_prosigns, supported_tokens
+
+
+def parse_markup(text, effective_speed=18, character_speed=20):
+    """Parse text into timed Morse tokens + display characters.
+
+    Supports:
+    - Prosigns in angle brackets, e.g. "<AR>" (timed, converted to token "AR", displayed as "AR")
+    - Informational segments in square brackets, e.g. "[Note: ...]" (NOT timed; displayed as-is WITHOUT the brackets; case preserved)
+    - Newlines / carriage returns (timed as a space, displayed as a newline)
+
+    Returns:
+        tuple: (morse_tokens, display_chars) where:
+            - morse_tokens: list[str] timed tokens to feed to KochTrainerAudioGen / timing
+            - display_chars: list[dict] one per displayed character, with metadata:
+                - ch: the character to display (may be '\\n')
+                - token_idx: int | None, the timed token index (None for info chars)
+                - is_prosign: bool
+                - is_info: bool
+                - info_anchor: int | None, token index at which the whole info segment appears
+    """
+    valid_prosigns, supported_tokens = _get_morse_tables(
+        effective_speed=effective_speed, character_speed=character_speed
+    )
+
+    morse_tokens = []
+    display_chars = []
+    token_idx = 0
+
+    def add_info_segment(segment, anchor):
+        for ch in segment:
+            if ch == "\r":
+                ch = "\n"
+            display_chars.append(
+                {
+                    "ch": ch,
+                    "token_idx": None,
+                    "is_prosign": False,
+                    "is_info": True,
+                    "info_anchor": anchor,
+                }
+            )
+
+    i = 0
+    while i < len(text):
+        ch = text[i]
+
+        # Informational segment: displayed immediately (no timing, no morse), case preserved.
+        if ch == "[":
+            end_idx = text.find("]", i + 1)
+            if end_idx != -1:
+                # Do not include the surrounding brackets in the output.
+                segment = text[i + 1 : end_idx]
+                add_info_segment(segment, anchor=token_idx)
+                i = end_idx + 1
+                continue
+
+        # Prosign: <AR>, <SK>, etc. (timed).
+        if ch == "<":
+            end_idx = text.find(">", i + 1)
+            if end_idx != -1:
+                prosign = text[i + 1 : end_idx].upper()
+                if prosign in valid_prosigns:
+                    morse_tokens.append(prosign)
+                    for pch in prosign:
+                        display_chars.append(
+                            {
+                                "ch": pch,
+                                "token_idx": token_idx,
+                                "is_prosign": True,
+                                "is_info": False,
+                                "info_anchor": None,
+                            }
+                        )
+                    token_idx += 1
+                    i = end_idx + 1
+                    continue
+
+        # Newlines / carriage returns: timed as a space, displayed as a newline.
+        if ch == "\r":
+            ch = "\n"
+        if ch == "\n":
+            morse_tokens.append(" ")
+            display_chars.append(
+                {
+                    "ch": "\n",
+                    "token_idx": token_idx,
+                    "is_prosign": False,
+                    "is_info": False,
+                    "info_anchor": None,
+                }
+            )
+            token_idx += 1
+            i += 1
+            continue
+
+        # Normalize tabs to spaces.
+        if ch == "\t":
+            ch = " "
+
+        # Spaces: timed as spaces, displayed as spaces.
+        if ch == " ":
+            morse_tokens.append(" ")
+            display_chars.append(
+                {
+                    "ch": " ",
+                    "token_idx": token_idx,
+                    "is_prosign": False,
+                    "is_info": False,
+                    "info_anchor": None,
+                }
+            )
+            token_idx += 1
+            i += 1
+            continue
+
+        # Regular character: timed (uppercased for morse), displayed as uppercased.
+        token = ch.upper()
+        if token not in supported_tokens:
+            # Unknown/unsupported: keep the original char in the viewport, but time it as a space.
+            morse_tokens.append(" ")
+            display_chars.append(
+                {
+                    "ch": ch,
+                    "token_idx": token_idx,
+                    "is_prosign": False,
+                    "is_info": False,
+                    "info_anchor": None,
+                }
+            )
+            token_idx += 1
+            i += 1
+            continue
+
+        morse_tokens.append(token)
+        display_chars.append(
+            {
+                "ch": token,
+                "token_idx": token_idx,
+                "is_prosign": False,
+                "is_info": False,
+                "info_anchor": None,
+            }
+        )
+        token_idx += 1
+        i += 1
+
+    return morse_tokens, display_chars
+
+
 def parse_prosigns(text):
     """Parse prosigns from angle brackets and return tokenized list.
     
@@ -70,36 +225,17 @@ def parse_prosigns(text):
 
 class ColorfulCharacterDisplay:
     def __init__(self, text, effective_speed=18, character_speed=20):
-        # Parse prosigns and get tokenized version
-        self.tokens, self.display_text = parse_prosigns(text.upper())
-        self.token_index = 0
+        self.effective_speed = effective_speed
+        self.character_speed = character_speed
+
+        # Parse markup (prosigns, info segments, newlines) into timed tokens and display characters
+        self.tokens, self.display_chars = parse_markup(
+            text, effective_speed=effective_speed, character_speed=character_speed
+        )
+        self.token_index = 0  # index into timed tokens
         self.effective_speed = effective_speed
         self.character_speed = character_speed
         
-        # Track which tokens are prosigns for green display
-        temp_gen = KochTrainerAudioGen("", effective_speed=effective_speed, character_speed=character_speed)
-        self.valid_prosigns = {k for k in temp_gen._letters.keys() if len(k) > 1}
-        
-        # Build character index mapping for display
-        self.char_to_token = []
-        char_idx = 0
-        for token in self.tokens:
-            if token in self.valid_prosigns:
-                # Prosign - map each character to this token index
-                for _ in range(len(token)):
-                    self.char_to_token.append(self.token_index)
-                char_idx += len(token)
-            else:
-                # Regular character
-                self.char_to_token.append(self.token_index)
-                char_idx += 1
-            self.token_index += 1
-        self.token_index = 0
-
-    def is_prosign(self, token):
-        """Check if a token is a prosign."""
-        return token in self.valid_prosigns
-
     def display_character(self):
         if os.name == 'nt':
             # For Windows
@@ -111,26 +247,41 @@ class ColorfulCharacterDisplay:
         bright_yellow = "\033[1;33m"
         bright_green = "\033[1;32m"
         bright_red = "\033[1;31m"
+        light_blue = "\033[94m"
         reset = "\033[0m"
         
-        # Build output with proper colors
         output_parts = []
-        
-        # Past tokens (before current)
-        for i in range(self.token_index):
-            token = self.tokens[i]
-            if self.is_prosign(token):
-                output_parts.append(bright_green + token)
+        for meta in self.display_chars:
+            ch = meta["ch"]
+
+            if ch == "\n":
+                # Preserve line breaks, but reveal them progressively like other timed content.
+                if meta.get("is_info"):
+                    if meta.get("info_anchor") is not None and meta["info_anchor"] <= self.token_index:
+                        output_parts.append(reset + "\n")
+                else:
+                    t_idx = meta.get("token_idx")
+                    if t_idx is not None and t_idx <= self.token_index:
+                        output_parts.append(reset + "\n")
+                continue
+
+            # Info segments appear instantly when reached, do not affect timing.
+            if meta["is_info"]:
+                if meta["info_anchor"] is not None and meta["info_anchor"] <= self.token_index:
+                    output_parts.append(light_blue + ch)
+                continue
+
+            # Timed morse chars: show progressively up to current token.
+            t_idx = meta["token_idx"]
+            if t_idx is None or t_idx > self.token_index:
+                continue
+
+            if t_idx < self.token_index:
+                output_parts.append((bright_green if meta["is_prosign"] else bright_yellow) + ch)
             else:
-                output_parts.append(bright_yellow + token)
-        
-        # Current token
-        if self.token_index < len(self.tokens):
-            current_token = self.tokens[self.token_index]
-            output_parts.append(bright_red + current_token)
-        
-        output = ''.join(output_parts) + reset
-        print(output)
+                output_parts.append(bright_red + ch)
+
+        print("".join(output_parts) + reset)
 
     def next(self):
         if self.token_index >= len(self.tokens):
@@ -258,79 +409,107 @@ def generate_audio_from_tokens(tokens, effective_speed=18, character_speed=20):
 
 def get_wrapped_text_layout(text, font, max_width, padding=40, font_size=100):
     """Calculate character positions with word wrapping.
-    Returns list of (char, x, y, line_num, text_index) tuples.
-    Includes all characters from text, preserving exact index mapping."""
+
+    Key behavior:
+    - Words do NOT wrap mid-word. If the next word won't fit, it starts on the next line.
+    - Explicit newlines in the input text ('\\n' or '\\r') force a new line.
+    - Returns list of (char, x, y, line_num, text_index) tuples.
+    """
     layout = []
     x = padding
     y = 0
     line_num = 0
     line_height = int(font_size * 1.3)
-    current_line_width = 0
-    
-    # Split into words for word wrapping, but track original indices
-    words_with_indices = []
+
+    usable_width = max_width - 2 * padding
+    if usable_width < 1:
+        usable_width = 1
+
+    space_width = font.getlength(" ")
+
     i = 0
+    pending_space_indices = []
+
+    def newline():
+        nonlocal x, y, line_num, pending_space_indices
+        pending_space_indices = []
+        line_num += 1
+        y += line_height
+        x = padding
+
     while i < len(text):
-        # Skip spaces
-        while i < len(text) and text[i] == ' ':
+        ch = text[i]
+
+        if ch == "\r":
+            ch = "\n"
+
+        if ch == "\n":
+            newline()
             i += 1
-        if i >= len(text):
-            break
-        
-        # Get word
-        word_start = i
-        word = []
-        while i < len(text) and text[i] != ' ':
-            word.append((text[i], i))
+            continue
+
+        if ch == "\t":
+            ch = " "
+
+        # Collect spaces to decide whether they belong on this line.
+        if ch == " ":
+            pending_space_indices.append(i)
             i += 1
-        
-        if word:
-            words_with_indices.append((word, word_start))
-    
-    # Process words with word wrapping
-    for word_idx, (word_chars, word_start) in enumerate(words_with_indices):
-        word = ''.join([char for char, _ in word_chars])
-        
-        # Check if we need a space before this word (not first word)
-        if word_idx > 0:
-            space_width = font.getlength(' ')
-            # Check if adding space + word would exceed width
-            if current_line_width + space_width + font.getlength(word) > (max_width - 2 * padding):
-                # Move to next line
-                line_num += 1
-                y += line_height
-                x = padding
-                current_line_width = 0
-            else:
-                # Add space on current line
-                # Find the space before this word in the original text
-                space_idx = word_start - 1
-                if space_idx >= 0 and text[space_idx] == ' ':
-                    layout.append((text[space_idx], x, y, line_num, space_idx))
-                x += space_width
-                current_line_width += space_width
-        
-        # Add characters of the word
-        for char, char_idx in word_chars:
-            char_width = font.getlength(char)
-            layout.append((char, x, y, line_num, char_idx))
-            x += char_width
-            current_line_width += char_width
-    
+            continue
+
+        # Collect a "word": run of non-space, non-newline characters.
+        word_indices = []
+        while i < len(text):
+            c = text[i]
+            if c == "\r":
+                c = "\n"
+            if c in ("\n", " ", "\t"):
+                break
+            word_indices.append(i)
+            i += 1
+
+        word = "".join(text[idx] for idx in word_indices)
+        word_width = font.getlength(word) if word else 0
+
+        # Drop leading spaces at the beginning of a line.
+        if x == padding:
+            pending_space_indices = []
+
+        current_line_width = x - padding
+        spaces_width = space_width * len(pending_space_indices)
+        required_width = spaces_width + word_width
+
+        # If it doesn't fit on this line (and we're not already at line start), wrap before the word.
+        if current_line_width > 0 and (current_line_width + required_width) > usable_width:
+            newline()
+            current_line_width = 0
+            pending_space_indices = []
+
+        # Lay out pending spaces (for positioning only; caller skips drawing them).
+        for s_idx in pending_space_indices:
+            layout.append((" ", x, y, line_num, s_idx))
+            x += space_width
+        pending_space_indices = []
+
+        # Lay out word characters.
+        for idx_char in word_indices:
+            c = text[idx_char]
+            if c == "\t":
+                c = " "
+            c_width = font.getlength(c)
+            layout.append((c, x, y, line_num, idx_char))
+            x += c_width
+
     return layout, line_height
 
 
-def create_video_frame_with_tokens(display_text, tokens, char_positions, current_token_idx, width, height, font_size=100, valid_prosigns=None):
-    """Create a single video frame showing text with prosign support.
-    
-    Args:
-        display_text: Text to display (prosigns without angle brackets)
-        tokens: List of tokens (characters and prosigns)
-        char_positions: List of dicts mapping each character to its token info
-        current_token_idx: Index of current token being displayed
-        width, height: Video dimensions
-        font_size: Font size
-        valid_prosigns: Set of valid prosign strings
+def create_video_frame_with_markup(display_text, display_chars, current_token_idx, token_count, width, height, font_size=100):
+    """Create a single video frame with prosigns, newlines, and info segments.
+
+    - Timed Morse content is revealed up to current_token_idx (current token in red)
+    - Prosigns are green once past (red when current)
+    - Informational text in [brackets] is light-blue and appears instantly when reached
+    - Explicit newlines are preserved
     """
     # Create black background
     img = Image.new('RGB', (width, height), color='black')
@@ -351,7 +530,7 @@ def create_video_frame_with_tokens(display_text, tokens, char_positions, current
     padding = 40
     max_text_width = width - 2 * padding
     
-    # Calculate layout for display text
+    # Calculate layout for display text (supports explicit newlines)
     layout, line_height = get_wrapped_text_layout(display_text, font, max_text_width, padding, font_size)
     
     if not layout:
@@ -363,26 +542,35 @@ def create_video_frame_with_tokens(display_text, tokens, char_positions, current
         max_visible_lines = 1
     
     # Determine if this is the final frame
-    show_all = (current_token_idx >= len(tokens))
+    show_all = (current_token_idx >= token_count)
     
-    # Find which line the current character is on
+    # Find which line the current token is on (for scrolling)
     current_line_num = 0
-    if show_all:
-        max_line = max([line_num for _, _, _, line_num, _ in layout]) if layout else 0
-        current_line_num = max_line
-    else:
-        # Find the first character of the current token
-        current_char_idx = 0
-        for i, pos in enumerate(char_positions):
-            if pos['token_idx'] == current_token_idx:
-                current_char_idx = i
-                break
-        
-        # Find the layout entry for this character
-        for char, x, y, line_num, text_idx in layout:
-            if text_idx == current_char_idx:
-                current_line_num = line_num
-                break
+    if layout:
+        if show_all:
+            current_line_num = max([ln for _, _, _, ln, _ in layout])
+        else:
+            # Prefer the first non-space char belonging to the current token
+            found = False
+            for char, _x, _y, ln, text_idx in layout:
+                meta = display_chars[text_idx]
+                if meta.get("is_info"):
+                    continue
+                t_idx = meta.get("token_idx")
+                if t_idx == current_token_idx and char != " ":
+                    current_line_num = ln
+                    found = True
+                    break
+            if not found:
+                # Fallback: last visible timed character
+                for char, _x, _y, ln, text_idx in reversed(layout):
+                    meta = display_chars[text_idx]
+                    if meta.get("is_info"):
+                        continue
+                    t_idx = meta.get("token_idx")
+                    if t_idx is not None and t_idx <= current_token_idx and char != " ":
+                        current_line_num = ln
+                        break
     
     # Calculate scroll offset
     max_line = max([line_num for _, _, _, line_num, _ in layout]) if layout else 0
@@ -406,38 +594,39 @@ def create_video_frame_with_tokens(display_text, tokens, char_positions, current
         if line_num < scroll_offset or line_num >= scroll_offset + max_visible_lines:
             continue
         
-        if text_idx >= len(char_positions):
+        if text_idx >= len(display_chars):
             continue
+
+        meta = display_chars[text_idx]
+        token_idx = meta.get("token_idx")
+        is_prosign = meta.get("is_prosign", False)
+        is_info = meta.get("is_info", False)
+        info_anchor = meta.get("info_anchor")
         
-        pos_info = char_positions[text_idx]
-        token_idx = pos_info['token_idx']
-        is_prosign = pos_info['is_prosign']
-        
+        # Visibility rules
         if show_all:
-            # Final frame: show all characters
-            if text_idx < len(display_text):
-                y = start_y + y_offset
-                # Determine color based on whether it's a prosign
-                if is_prosign and valid_prosigns:
-                    color = '#00FF00'  # Green for prosigns
-                else:
-                    color = '#FFFF00'  # Yellow for regular characters
-                draw.text((x_pos, y), char, fill=color, font=font)
+            visible = True
+        elif is_info:
+            visible = info_anchor is not None and info_anchor <= current_token_idx
         else:
-            # Regular frame: show up to current token
-            if token_idx < current_token_idx:
-                # Past token
-                y = start_y + y_offset
-                if is_prosign and valid_prosigns:
-                    color = '#00FF00'  # Green for past prosigns
-                else:
-                    color = '#FFFF00'  # Yellow for past regular characters
-                draw.text((x_pos, y), char, fill=color, font=font)
-            elif token_idx == current_token_idx:
-                # Current token
-                y = start_y + y_offset
-                color = '#FF0000'  # Red for current token
-                draw.text((x_pos, y), char, fill=color, font=font)
+            visible = token_idx is not None and token_idx <= current_token_idx
+
+        if not visible:
+            continue
+
+        # Color rules
+        if is_info:
+            color = "#66CCFF"  # light blue
+        elif show_all:
+            color = "#00FF00" if is_prosign else "#FFFF00"
+        else:
+            if token_idx == current_token_idx:
+                color = "#FF0000"
+            else:
+                color = "#00FF00" if is_prosign else "#FFFF00"
+
+        y = start_y + y_offset
+        draw.text((x_pos, y), char, fill=color, font=font)
     
     return img
 
@@ -556,47 +745,18 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
     print("Generating video...")
     print(f"Text: {text}")
     
-    # Parse prosigns to get tokens and display text
-    tokens, display_text = parse_prosigns(text.upper())
-    #print(f"Tokens: {tokens}")
+    # Parse markup: timed morse tokens + display text (includes newlines + info segments)
+    tokens, display_chars = parse_markup(text, effective_speed=effective_speed, character_speed=character_speed)
+    display_text = "".join([m["ch"] for m in display_chars])
     print(f"Display text: {display_text}")
-    
-    # Get valid prosigns for color tracking
-    temp_gen = KochTrainerAudioGen("", effective_speed=effective_speed, character_speed=character_speed)
-    valid_prosigns = {k for k in temp_gen._letters.keys() if len(k) > 1}
     
     # Calculate timing for each token
     print("Calculating token timings...")
     token_timings = []
     current_time = 0.0
     
-    # Build character index mapping for display
-    char_to_token = []
-    char_positions = []  # Track which characters belong to which token
-    char_idx = 0
+    # Calculate timing for each token
     for token_idx, token in enumerate(tokens):
-        token_start_char = char_idx
-        if token in valid_prosigns:
-            # Prosign - each character maps to this token
-            for _ in range(len(token)):
-                char_to_token.append(token_idx)
-                char_positions.append({
-                    'token_idx': token_idx,
-                    'is_prosign': True,
-                    'char_in_token': char_idx - token_start_char
-                })
-                char_idx += 1
-        else:
-            # Regular character
-            char_to_token.append(token_idx)
-            char_positions.append({
-                'token_idx': token_idx,
-                'is_prosign': False,
-                'char_in_token': 0
-            })
-            char_idx += 1
-        
-        # Calculate duration for this token
         duration = calculate_token_duration(token, effective_speed, character_speed)
         token_timings.append({
             'token_idx': token_idx,
@@ -604,7 +764,7 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
             'start_time': current_time,
             'duration': duration,
             'end_time': current_time + duration,
-            'is_prosign': token in valid_prosigns
+            'is_prosign': len(token) > 1
         })
         current_time += duration
     
@@ -647,10 +807,8 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
         if t >= total_duration:
             current_token_idx = len(tokens)  # One past the end indicates final frame
         
-        # Create frame with token information
-        frame_img = create_video_frame_with_tokens(
-            display_text, tokens, char_positions, current_token_idx, 
-            width, height, font_size, valid_prosigns
+        frame_img = create_video_frame_with_markup(
+            display_text, display_chars, current_token_idx, len(tokens), width, height, font_size
         )
         return np.array(frame_img)
     
@@ -679,22 +837,21 @@ def generate_video(text, output_file, effective_speed=18, character_speed=18):
 def read_input_file(filepath):
     """Read an input file and prepare for morse display.
     
-    Strips carriage returns and newlines, replacing them with spaces.
-    Prosigns in angle brackets (e.g., <AR>, <SK>) are preserved for parse_prosigns.
+    Preserves newlines (CR/LF) so they can be displayed as new lines in the viewport.
+    Prosigns in angle brackets (e.g., <AR>, <SK>) and info segments in [brackets] are preserved.
     """
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
-    content = content.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
-    while '  ' in content:
-        content = content.replace('  ', ' ')
-    return content.strip()
+    # Normalize CR to LF; universal newlines already converts CRLF/CR to \n in most cases.
+    content = content.replace("\r", "\n")
+    return content
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Display text character by character with morse code audio')
     parser.add_argument('text', nargs='?', default=None, help='Text to display (omit when using -i)')
     parser.add_argument('-i', '--input-file', type=str, default=None,
-                        help='Input file: newlines/CR replaced with spaces; prosigns in <angle brackets> supported')
+                        help='Input file. Newlines/CR are preserved for display; prosigns in <angle brackets> supported; info segments in [brackets] are displayed instantly in light blue without timing/audio.')
     parser.add_argument('-v', '--video', action='store_true', help='Generate video file')
     parser.add_argument('-f', '--file', type=str, help='Output video filename (required with -v, or defaults to videos/morse_video.mp4)')
     parser.add_argument('--effective-speed', type=float, default=18,
@@ -711,7 +868,7 @@ if __name__ == "__main__":
     else:
         parser.error('Either provide text as argument or use -i/--input-file')
     
-    text = text.upper()
+    # Do NOT uppercase globally: info segments in [brackets] must preserve case.
     
     if args.video:
         # Video generation mode
