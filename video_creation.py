@@ -59,8 +59,21 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
     if not odp_path.exists():
         raise FileNotFoundError(f"ODP template not found: {odp_path}")
 
-    # Resolve soffice (LibreOffice) - try common names on Windows and Unix
+    # Resolve soffice (LibreOffice) - try PATH names, then common install paths.
+    # On Windows, soffice.com is the CLI wrapper; use CREATE_NO_WINDOW to avoid
+    # console popups that block the subprocess.
     soffice_candidates = ["soffice", "libreoffice", "soffice.exe"]
+    if sys.platform == "win32":
+        soffice_candidates = ["soffice.com", "soffice", "libreoffice", "soffice.exe"]
+        prog = os.environ.get("ProgramFiles", "C:\\Program Files")
+        prog86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+        soffice_candidates.extend([
+            str(Path(prog) / "LibreOffice" / "program" / "soffice.com"),
+            str(Path(prog) / "LibreOffice" / "program" / "soffice.exe"),
+            str(Path(prog86) / "LibreOffice" / "program" / "soffice.com"),
+            str(Path(prog86) / "LibreOffice" / "program" / "soffice.exe"),
+        ])
+    _no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     soffice = None
     for name in soffice_candidates:
         try:
@@ -69,6 +82,7 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
                 capture_output=True,
                 text=True,
                 timeout=5,
+                creationflags=_no_window,
             )
             if r.returncode == 0:
                 soffice = name
@@ -79,7 +93,8 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
     if soffice is None:
         raise RuntimeError(
             "LibreOffice is required for title slide generation. "
-            "Install LibreOffice and ensure 'soffice' is on your PATH."
+            "Install LibreOffice and ensure 'soffice' is on your PATH, or install to "
+            "C:\\Program Files\\LibreOffice."
         )
 
     title = _escape_xml_text(title) if title else ""
@@ -141,7 +156,10 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
         result = None
         last_error = None
         for attempt in range(3):
-            result = subprocess.run(base_cmd, capture_output=True, text=True, timeout=60, cwd=str(tmppath))
+            result = subprocess.run(
+                base_cmd, capture_output=True, text=True, timeout=60, cwd=str(tmppath),
+                creationflags=_no_window,
+            )
             if result.returncode == 0:
                 break
             last_error = result.stderr or result.stdout
@@ -150,7 +168,10 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
         if result is None or result.returncode != 0:
             # Retry with simple conversion
             for attempt in range(3):
-                result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60, cwd=str(tmppath))
+                result = subprocess.run(
+                    fallback_cmd, capture_output=True, text=True, timeout=60, cwd=str(tmppath),
+                    creationflags=_no_window,
+                )
                 if result.returncode == 0:
                     break
                 last_error = result.stderr or result.stdout

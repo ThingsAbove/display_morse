@@ -124,11 +124,12 @@ python display.py -i input.txt -v -f output.mp4 --title "Lesson 1" --subtitle "L
 
 ### LibreOffice (for title slide intro)
 
-When using `--title` to add a title slide intro, **LibreOffice** must be installed with `soffice` on your PATH. The tool uses LibreOffice headless to render the ODP template (`slides/video-title.odp`) to PNG. It runs with `--nofirststartwizard` and an isolated profile to avoid first-run dialogs, and retries on failure.
+When using `--title` to add a title slide intro, **LibreOffice** must be installed with `soffice` on your PATH (or in `C:\Program Files\LibreOffice` on Windows). The tool uses LibreOffice headless to render the ODP template (`slides/video-title.odp`) to PNG. It runs with `--nofirststartwizard` and an isolated profile to avoid first-run dialogs, and retries on failure. On Windows, it invokes `soffice.com` with `CREATE_NO_WINDOW` to prevent console popups from blocking the process.
 
 ### Test Dependencies
 
 - **pytest**: Test framework for CLI and video effect tests.
+- **pytest-timeout**: Ensures the title slide non-interactive test fails fast if it hangs.
 
 ### Installation
 
@@ -151,7 +152,10 @@ Run specific test files:
 ```bash
 pytest tests/test_cli_args.py -v
 pytest tests/test_ken_burns.py -v
+pytest tests/test_title_slide.py -v
 ```
+
+`test_title_slide.py` verifies that title slide generation completes without interactive prompts (requires LibreOffice and `slides/video-title.odp`). It times out after 120 seconds if blocked.
 
 ## Input File Format
 
