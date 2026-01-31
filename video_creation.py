@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -107,33 +108,57 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
         # LibreOffice convert to PNG
         outdir = tmppath / "out"
         outdir.mkdir(exist_ok=True)
+        # Use isolated profile to avoid first-run wizard and user prompts
+        profile_dir = tmppath / "lo_profile"
+        profile_dir.mkdir(exist_ok=True)
+        profile_uri = Path(profile_dir.resolve()).as_uri()
         filter_spec = f'png:impress_png_Export:{{"PixelWidth":{output_width},"PixelHeight":{output_height}}}'
-        cmd = [
+        base_cmd = [
             soffice,
             "--headless",
+            "--nofirststartwizard",
+            "--norestore",
+            "-env:UserInstallation=" + profile_uri,
             "--convert-to",
             filter_spec,
             "--outdir",
             str(outdir),
             str(temp_odp),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, cwd=str(tmppath))
-        if result.returncode != 0:
-            # Fallback: try simple conversion without filter
-            cmd_fallback = [
-                soffice,
-                "--headless",
-                "--convert-to",
-                "png",
-                "--outdir",
-                str(outdir),
-                str(temp_odp),
-            ]
-            result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=30, cwd=str(tmppath))
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"LibreOffice conversion failed: {result.stderr or result.stdout}"
-                )
+        fallback_cmd = [
+            soffice,
+            "--headless",
+            "--nofirststartwizard",
+            "--norestore",
+            "-env:UserInstallation=" + profile_uri,
+            "--convert-to",
+            "png",
+            "--outdir",
+            str(outdir),
+            str(temp_odp),
+        ]
+        result = None
+        last_error = None
+        for attempt in range(3):
+            result = subprocess.run(base_cmd, capture_output=True, text=True, timeout=60, cwd=str(tmppath))
+            if result.returncode == 0:
+                break
+            last_error = result.stderr or result.stdout
+            if attempt < 2:
+                time.sleep(2)
+        if result is None or result.returncode != 0:
+            # Retry with simple conversion
+            for attempt in range(3):
+                result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60, cwd=str(tmppath))
+                if result.returncode == 0:
+                    break
+                last_error = result.stderr or result.stdout
+                if attempt < 2:
+                    time.sleep(2)
+        if result is None or result.returncode != 0:
+            raise RuntimeError(
+                f"LibreOffice conversion failed after retries: {last_error}"
+            )
 
         # Find output PNG
         png_files = list(outdir.glob("*.png"))

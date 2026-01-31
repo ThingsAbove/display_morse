@@ -124,7 +124,7 @@ python display.py -i input.txt -v -f output.mp4 --title "Lesson 1" --subtitle "L
 
 ### LibreOffice (for title slide intro)
 
-When using `--title` to add a title slide intro, **LibreOffice** must be installed with `soffice` on your PATH. The tool uses LibreOffice headless to render the ODP template (`slides/video-title.odp`) to PNG.
+When using `--title` to add a title slide intro, **LibreOffice** must be installed with `soffice` on your PATH. The tool uses LibreOffice headless to render the ODP template (`slides/video-title.odp`) to PNG. It runs with `--nofirststartwizard` and an isolated profile to avoid first-run dialogs, and retries on failure.
 
 ### Test Dependencies
 
