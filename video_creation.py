@@ -94,7 +94,8 @@ def create_title_slide_image(title, subtitle, detailtitle, odp_path, output_widt
 
         content_xml = tmppath / "content.xml"
         content = content_xml.read_text(encoding="utf-8")
-        content = content.replace("TITLE", title).replace("SUBTITLE", subtitle).replace("DETAILS", detailtitle)
+        # Replace SUBTITLE and DETAILS before TITLE, since "TITLE" is a substring of "SUBTITLE"
+        content = content.replace("SUBTITLE", subtitle).replace("DETAILS", detailtitle).replace("TITLE", title)
         content_xml.write_text(content, encoding="utf-8")
 
         # Rezip to temp ODP
