@@ -44,6 +44,14 @@ Commands in braces are not displayed but affect playback:
 - Each newline is **timed as a space** in Morse code (creates a pause)
 - Words **do not wrap mid-word**; if a word won't fit, it starts on the next line
 
+## Project Structure
+
+- **display.py** — Core display logic, markup parsing, morse timing, and frame rendering. Entry point for CLI.
+- **video_creation.py** — Video generation: morse content assembly, title slide (ODP), intro clips, and output.
+- **video_effects.py** — Video effects (e.g., Ken Burns logo intro).
+- **koch_trainer.py** — Koch method training and morse audio generation.
+- **scripts/update_odp_extract.py** — Re-extract ODP template to video-title_extracted and video-title.zip.
+
 ## Command Line Options
 
 ### Basic Usage
@@ -72,6 +80,10 @@ python display.py -i input.txt -v -f output_video.mp4
 | `-f, --file` | Output video filename (required with `-v`, or defaults to `videos/morse_video.mp4`) |
 | `--effective-speed` | Effective words per minute (Farnsworth speed). Default: 18 |
 | `--character-speed` | Character speed in words per minute. Default: 20 |
+| `--title` | Title for video intro slide (enables title + logo intro when `-v`) |
+| `--subtitle` | Subtitle for video intro slide |
+| `--detailtitle` | Details text for video intro slide |
+| `--intro-length-duration` | Seconds to hold full logo after Ken Burns pan. Default: 15 |
 | `-h, --help` | Show help message |
 
 ### Examples
@@ -91,6 +103,9 @@ python display.py -i sample.txt -v -f "videos/my_video.mp4"
 
 # Complex example with all features
 python display.py -i "input.txt" -v --effective-speed 18 --character-speed 22 -f "output.mp4"
+
+# Generate video with title slide and logo intro
+python display.py -i input.txt -v -f output.mp4 --title "Lesson 1" --subtitle "Letters A–E" --detailtitle "Koch Method"
 ```
 
 ## Libraries and Dependencies
@@ -107,6 +122,14 @@ python display.py -i "input.txt" -v --effective-speed 18 --character-speed 22 -f
 - **numpy**: Numerical operations for video processing
 - **imageio-ffmpeg**: FFmpeg backend for video encoding
 
+### LibreOffice (for title slide intro)
+
+When using `--title` to add a title slide intro, **LibreOffice** must be installed with `soffice` on your PATH. The tool uses LibreOffice headless to render the ODP template (`slides/video-title.odp`) to PNG.
+
+### Test Dependencies
+
+- **pytest**: Test framework for CLI and video effect tests.
+
 ### Installation
 
 Install dependencies from `requirements.txt`:
@@ -116,6 +139,19 @@ pip install -r requirements.txt
 ```
 
 **Note**: If video generation libraries are not installed, `display.py` will still work for terminal display mode, but video generation will be unavailable.
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+Run specific test files:
+
+```bash
+pytest tests/test_cli_args.py -v
+pytest tests/test_ken_burns.py -v
+```
 
 ## Input File Format
 
@@ -150,6 +186,15 @@ Hello World {p05}
 - Large font size (100pt) optimized for phone viewing
 - Output format: MP4 (H.264 video, AAC audio)
 
+### Video Title and Intro (with `--title`)
+
+When `--title` is provided with `-v`, the generated video includes:
+
+1. **Title slide** (3 seconds): Rendered from `slides/video-title.odp` with TITLE, SUBTITLE, and DETAILS placeholders replaced. 1 second fade in. Font size and color from the template are preserved.
+2. **Logo intro** (8 second pan + `--intro-length-duration` hold): Ken Burns effect panning across `images/logo.png` left to right (aspect ratio preserved), 1 second fade in and 1.5 second fade out.
+3. **Morse content**: Main video.
+4. **End roll** (8 second pan + 10 second hold): Duplicate Ken Burns logo with 1 second fade in and 3 second fade out.
+
 ## Technical Details
 
 - **Word wrapping**: Words never break mid-word; entire words move to next line if needed
@@ -157,7 +202,20 @@ Hello World {p05}
 - **Character encoding**: UTF-8 support for international characters
 - **Platform support**: Works on Windows, Linux, and macOS
 
+## Updating the Title Slide Template
+
+After editing `slides/video-title.odp`, run:
+
+```bash
+python scripts/update_odp_extract.py
+```
+
+This updates `slides/video-title_extracted/` and `slides/video-title.zip` from the ODP.
+
 ## See Also
 
 - `koch_trainer.py`: Koch method training tool with random character/word generation
+- `video_creation.py`: Video generation and title/intro assembly
+- `video_effects.py`: Ken Burns and other video effects
+- `tests/`: Test suite for CLI and effects
 - `requirements.txt`: Complete list of Python dependencies

@@ -10,3 +10,4 @@ proglog==0.1.12
 PyAudio==0.2.14
 python-dotenv==1.2.1
 tqdm==4.67.1
+pytest>=7.0.0
