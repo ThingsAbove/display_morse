@@ -1,12 +1,11 @@
 import os, time, sys
 import argparse
-import tempfile
 import math
 import re
+from pathlib import Path
 from koch_trainer import KochTrainerAudioGen
 
 try:
-    from moviepy import VideoClip, AudioFileClip, CompositeVideoClip
     from PIL import Image, ImageDraw, ImageFont
     import numpy as np
     MOVIEPY_AVAILABLE = True
@@ -800,127 +799,6 @@ def create_video_frame(text, current_index, width, height, font_size=100):
     return img
 
 
-def generate_video(text, output_file, effective_speed=18, character_speed=18):
-    """Generate HD video with synchronized text and audio."""
-    if not MOVIEPY_AVAILABLE:
-        print("Error: moviepy and Pillow are required for video generation")
-        sys.exit(1)
-    
-    print("Generating video...")
-    print(f"Text: {text}")
-    
-    # Parse markup: timed morse tokens + display text + timeline events (includes pauses)
-    tokens, display_chars, events = parse_markup(text, effective_speed=effective_speed, character_speed=character_speed)
-    display_text = "".join([m["ch"] for m in display_chars])
-    print(f"Display text: {display_text}")
-    
-    # Build timeline segments (token/pause) and total duration
-    print("Calculating token timings...")
-    current_time = 0.0
-    segments = []
-    
-    for ev in events:
-        if ev["kind"] == "pause":
-            dur = float(ev["seconds"])
-            segments.append(
-                {"kind": "pause", "start": current_time, "end": current_time + dur}
-            )
-            current_time += dur
-        else:
-            token = ev["token"]
-            dur = calculate_token_duration(token, effective_speed, character_speed)
-            segments.append(
-                {
-                    "kind": "token",
-                    "token_idx": ev["token_idx"],
-                    "token": token,
-                    "start": current_time,
-                    "end": current_time + dur,
-                }
-            )
-            current_time += dur
-    
-    total_duration = current_time
-    print(f"Total duration: {total_duration:.2f} seconds")
-    
-    # Generate complete audio track from events (tokens + exact pauses)
-    print("Generating audio track...")
-    temp_audio_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-    temp_audio_file.close()
-    
-    audio_generator = generate_audio_from_events(events, effective_speed=effective_speed, character_speed=character_speed)
-    with open(temp_audio_file.name, "wb") as f:
-        import audiogen_p3
-        audiogen_p3.write_wav(f, audio_generator)
-    
-    # Video dimensions (HD)
-    width, height = 1920, 1080
-    fps = 30
-    font_size = 100  # Large font for phone viewing
-    
-    # Create frame generator function
-    def make_frame(t):
-        # Clamp time to valid range
-        if t < 0:
-            t = 0
-        elif t >= total_duration:
-            t = total_duration
-        
-        # Determine reveal + active token for time t.
-        # During pauses: active_token_idx=None, reveal_token_idx does not change.
-        reveal_token_idx = 0
-        active_token_idx = None
-
-        if t >= total_duration:
-            reveal_token_idx = len(tokens)
-            active_token_idx = None
-        else:
-            for seg in segments:
-                if t < seg["end"]:
-                    if seg["kind"] == "token":
-                        active_token_idx = seg["token_idx"]
-                        reveal_token_idx = seg["token_idx"]
-                    else:
-                        active_token_idx = None
-                    break
-                # Segment fully completed
-                if seg["kind"] == "token":
-                    reveal_token_idx = seg["token_idx"] + 1
-
-        frame_img = create_video_frame_with_markup(
-            display_text,
-            display_chars,
-            reveal_token_idx,
-            active_token_idx,
-            len(tokens),
-            width,
-            height,
-            font_size,
-        )
-        return np.array(frame_img)
-    
-    # Create video clip
-    print("Creating video frames...")
-    video = VideoClip(make_frame, duration=total_duration)
-    video = video.with_fps(fps)
-    
-    # Add audio
-    print("Adding audio track...")
-    audio = AudioFileClip(temp_audio_file.name)
-    video = video.with_audio(audio)
-    
-    # Write video file
-    print(f"Writing video to {output_file}...")
-    video.write_videofile(output_file, fps=fps, codec='libx264', audio_codec='aac')
-    
-    # Cleanup
-    video.close()
-    audio.close()
-    os.unlink(temp_audio_file.name)
-    
-    print(f"Video generation complete: {output_file}")
-
-
 def read_input_file(filepath):
     """Read an input file and prepare for morse display.
     
@@ -934,7 +812,8 @@ def read_input_file(filepath):
     return content
 
 
-if __name__ == "__main__":
+def create_parser():
+    """Create and return the argument parser for the display CLI."""
     parser = argparse.ArgumentParser(description='Display text character by character with morse code audio')
     parser.add_argument('text', nargs='?', default=None, help='Text to display (omit when using -i)')
     parser.add_argument('-i', '--input-file', type=str, default=None,
@@ -945,7 +824,19 @@ if __name__ == "__main__":
                         help='Effective words per minute (Farnsworth speed). Default: 18')
     parser.add_argument('--character-speed', type=float, default=20,
                         help='Character speed in words per minute. Default: 20')
-    
+    parser.add_argument('--title', type=str, default=None,
+                        help='Title for video intro slide (enables title + logo intro when -v)')
+    parser.add_argument('--subtitle', type=str, default=None,
+                        help='Subtitle for video intro slide')
+    parser.add_argument('--detailtitle', type=str, default=None,
+                        help='Details text for video intro slide')
+    parser.add_argument('--intro-length-duration', type=float, default=15,
+                        help='Seconds to hold full logo after Ken Burns pan. Default: 15')
+    return parser
+
+
+if __name__ == "__main__":
+    parser = create_parser()
     args = parser.parse_args()
     
     if args.input_file:
@@ -975,8 +866,18 @@ if __name__ == "__main__":
         output_dir = os.path.dirname(output_file)
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-        
-        generate_video(text, output_file, effective_speed=args.effective_speed, character_speed=args.character_speed)
+
+        from video_creation import generate_video
+        generate_video(
+            text,
+            output_file,
+            effective_speed=args.effective_speed,
+            character_speed=args.character_speed,
+            title=args.title,
+            subtitle=args.subtitle,
+            detailtitle=args.detailtitle,
+            intro_length_duration=args.intro_length_duration,
+        )
     else:
         # Terminal display mode (original behavior)
         display = ColorfulCharacterDisplay(text, effective_speed=args.effective_speed, character_speed=args.character_speed)
